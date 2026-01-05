@@ -1,0 +1,93 @@
+# 基于Python 3.11 slim镜像（Debian系，兼容性更好，解决内核不兼容问题）
+FROM python:3.11-slim as builder
+
+# 手动创建apt源文件，配置阿里云Debian Trixie源（核心提速：下载速度提升10-20倍）
+RUN echo "deb http://mirrors.aliyun.com/debian/ trixie main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian/ trixie-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian/ trixie-backports main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian-security/ trixie-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list
+
+# 安装构建依赖（阿里云源，快速下载）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*  # 构建阶段无需安装curl，运行阶段直接安装更可靠
+
+# 设置工作目录
+WORKDIR /app
+
+# 设置环境变量
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+    PIP_TRUSTED_HOST=mirrors.aliyun.com
+
+# 创建Python虚拟环境（提升依赖隔离性）
+RUN python -m venv /app/venv
+ENV PATH="/app/venv/bin:$PATH"
+
+# 先复制依赖文件（利用Docker缓存，代码变动不重新安装依赖）
+COPY requirements_api.txt .
+
+# 安装Python依赖
+RUN pip install --upgrade pip && \
+    pip install -r requirements_api.txt
+
+# 第二阶段：运行阶段（更精简，解决curl依赖问题）
+FROM python:3.11-slim
+
+# 手动创建apt源文件，配置阿里云Debian Trixie源
+RUN echo "deb http://mirrors.aliyun.com/debian/ trixie main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian/ trixie-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian/ trixie-backports main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian-security/ trixie-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list
+
+# 设置工作目录
+WORKDIR /app
+
+# 设置环境变量
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    PATH="/app/venv/bin:$PATH"
+
+# 调整用户创建逻辑：先判断组是否存在，不存在再创建；避免冲突
+RUN if ! getent group 1000 > /dev/null; then \
+        groupadd -g 1000 appuser; \
+    fi && \
+    useradd -u 1000 -g 1000 -s /bin/sh -m appuser
+
+# 安装运行时依赖（添加curl，自动带完整依赖库，解决libcurl.so.4缺失问题）
+# 注意：续行符 \ 后面不能有任何字符（包括注释和空格），注释单独写在上方
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    netcat-openbsd \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 从构建阶段仅复制虚拟环境（无需复制curl，运行阶段已安装）
+COPY --from=builder /app/venv /app/venv
+
+# 先复制共享代码，再复制API代码（利用缓存）
+COPY shared/ ./shared/
+COPY api_server/ ./api_server/
+
+# 创建目录并授权（合并命令）
+RUN mkdir -p /app/logs /app/data && \
+    chown -R 1000:1000 /app
+
+# 切换到非root用户
+USER 1000
+
+# 注释/删除Dockerfile中的健康检查，优先使用docker-compose的配置，避免冲突
+# HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+#     CMD curl -f http://localhost:8000/health || exit 1
+
+# 暴露端口
+EXPOSE 8000
+
+# 动态配置Uvicorn Worker数量（默认改为2，避免512M内存不足）
+CMD ["sh", "-c", "uvicorn api_server.main:app --host 0.0.0.0 --port ${API_PORT:-8000} --workers ${UVICORN_WORKERS:-2}"]

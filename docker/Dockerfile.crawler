@@ -1,0 +1,136 @@
+# 第一阶段：基础环境构建（使用python:3.11-slim，兼容旧内核）
+FROM python:3.11-slim as base
+
+RUN echo "deb http://mirrors.aliyun.com/debian/ trixie main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian/ trixie-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian/ trixie-backports main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian-security/ trixie-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    rm -f /etc/apt/sources.list.d/*
+
+# 安装系统依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    curl \
+    gnupg \
+    unzip \
+    gcc \
+    g++ \
+    libpq-dev \
+    libssl-dev \
+    libffi-dev \
+    libxml2-dev \
+    libxslt1-dev \
+    zlib1g-dev \
+    alsa-utils \
+    at-spi2-core \
+    libatk1.0-0 \
+    cups \
+    dbus \
+    libdrm2 \
+    libgbm1 \
+    libgtk-3-0 \
+    libnspr4 \
+    libnss3 \
+    libpango-1.0-0 \
+    libx11-6 \
+    libxcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxrandr2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 本地安装Chrome
+COPY local_files/google-chrome-stable.deb /tmp/
+RUN dpkg -i /tmp/google-chrome-stable.deb || apt-get install -y --fix-broken && \
+    rm -rf /tmp/google-chrome-stable.deb /var/lib/apt/lists/*
+
+# 本地安装ChromeDriver
+COPY local_files/chromedriver.zip /tmp/
+RUN unzip /tmp/chromedriver.zip -d /tmp/ && \
+    mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver && \
+    chmod +x /usr/local/bin/chromedriver && \
+    rm -rf /tmp/chromedriver.zip /tmp/chromedriver-linux64 /var/lib/apt/lists/*
+
+# 第二阶段：Python依赖构建
+FROM base as builder
+
+WORKDIR /app
+
+# 设置PyPI国内源
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+    PIP_TRUSTED_HOST=mirrors.aliyun.com
+
+# 创建虚拟环境
+RUN python -m venv /app/venv
+ENV PATH="/app/venv/bin:$PATH"
+
+# 复制依赖文件
+COPY requirements_crawler.txt .
+COPY requirements.txt .
+
+# 安装依赖
+RUN pip install --upgrade pip && \
+    pip install -r requirements_crawler.txt -r requirements.txt && \
+    rm -rf /root/.cache/pip
+
+# 第三阶段：运行阶段
+FROM base
+
+WORKDIR /app
+
+# 设置环境变量
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    PATH="/app/venv/bin:$PATH" \
+    CHROME_BIN=/usr/bin/google-chrome-stable \
+    CHROMEDRIVER_PATH=/usr/local/bin/chromedriver \
+    DISPLAY=:99 \
+    SCREEN_RESOLUTION=1920x1080x24
+
+# 创建用户
+RUN if ! getent group 1000 > /dev/null; then \
+        groupadd -g 1000 appuser; \
+    fi && \
+    useradd -u 1000 -g 1000 -s /bin/sh -m appuser
+
+# 复制虚拟环境
+COPY --from=builder /app/venv /app/venv
+
+# 复制代码
+COPY shared/ ./shared/
+COPY crawler_nodes/node_manager.py ./crawler_nodes/
+COPY crawler_nodes/scrapy_project/ ./scrapy_project/
+
+# 授权目录
+RUN mkdir -p /app/logs /app/data /app/crawler_nodes/scrapy_project/logs && \
+    chown -R 1000:1000 /app && \
+    chmod -R 755 /app && \
+    rm -rf /var/lib/apt/lists/*
+
+# 切换用户
+USER 1000
+
+# 健康检查（用SCAN替代KEYS，使用环境变量密码）
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD python -c "import sys; import redis; import os; \
+    try: \
+        r = redis.Redis(host='redis', port=6379, password=os.getenv('REDIS_PASSWORD', '123456'), db=0, socket_timeout=5); \
+        exists = False; cursor = 0; \
+        while True: \
+            cursor, keys = r.scan(cursor, match=f'crawler_node_{os.getenv("NODE_ID")}'); \
+            if b'crawler_node_' + os.getenv('NODE_ID').encode() in keys: \
+                exists = True; break; \
+            if cursor == 0: break; \
+        sys.exit(0 if exists else 1); \
+    except Exception as e: \
+        print(e); sys.exit(1)"
+
+# 暴露端口
+EXPOSE 6023
+
+# 启动命令
+CMD ["/bin/sh", "-c", "/app/venv/bin/python crawler_nodes/node_manager.py"]

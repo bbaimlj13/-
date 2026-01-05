@@ -1,0 +1,55 @@
+power_news_crawler_distributed/
+├── api_server/                    # FastAPI Web服务
+│   ├── main.py                   # FastAPI主程序
+│   ├── routes/                   # API路由
+│   │   ├── __init__.py
+│   │   ├── crawler_routes.py     # 爬虫控制接口
+│   │   └── monitor_routes.py     # 监控接口
+│   └── utils/                    # 工具模块
+│       ├── __init__.py
+│       └── redis_manager.py      # Redis连接管理
+├── crawler_nodes/                # 爬虫节点
+│   ├── scrapy_project/           # Scrapy项目
+│   │   ├── spiders/              # 爬虫定义（用户自定义）
+│   │   ├── middlewares/          # 中间件
+│   │   │   ├── __init__.py
+│   │   │   ├── random_user_agent_middleware.py
+│   │   │   └── selenium_middleware.py
+│   │   ├── utils/                # 工具模块
+│   │   │   ├── __init__.py
+│   │   │   ├── minio_uploader.py
+│   │   │   ├── mysql_writer.py
+│   │   │   └── image_handler.py
+│   │   ├── __init__.py
+│   │   ├── items.py              # 数据模型
+│   │   ├── pipelines.py          # 数据处理管道
+│   │   └── settings.py           # Scrapy配置
+│   └── node_manager.py           # 节点管理脚本
+├── shared/                       # 共享代码
+│   ├── __init__.py
+│   ├── config.py                 # 全局配置
+│   ├── models.py                 # 数据模型
+│   └── constants.py              # 常量定义
+├── docker/                       # Docker配置
+│   ├── Dockerfile.crawler        # 爬虫节点镜像
+│   ├── Dockerfile.api            # API服务器镜像
+│   └── docker-compose.yml        # 完整编排
+├── redis/                        # Redis配置
+│   └── redis.conf                # Redis配置文件
+├── monitoring/                   # 监控配置
+│   ├── prometheus.yml            # Prometheus配置
+│   └── grafana/                  # Grafana配置
+│       └── provisioning/         # Grafana预配置
+│           ├── dashboards/       # 仪表板配置
+│           │   └── crawler_dashboard.json
+│           └── datasources/      # 数据源配置
+│               └── prometheus.yml
+├── examples/                     # 示例代码
+│   └── api_client.py             # API客户端示例
+├── scripts/                      # 部署脚本
+│   └── deploy.sh                 # 一键部署脚本
+├── requirements.txt              # 基础依赖
+├── requirements_api.txt          # API服务依赖
+├── requirements_crawler.txt      # 爬虫依赖
+├── .env.example                  # 环境变量示例
+└── README.md                     # 项目说明文档

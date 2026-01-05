@@ -1,0 +1,14 @@
+venv
+.vscode
+.idea
+__pycache__
+*.pyc
+*.pyo
+.DS_Store
+*.log
+.env
+.env.example
+*.sh
+*.pak
+docker/opt
+local_files

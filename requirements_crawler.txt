@@ -1,0 +1,54 @@
+# Scrapy框架
+scrapy==2.11.0
+scrapy-redis==0.7.3
+scrapy-selenium==0.0.7
+
+# Selenium相关
+selenium==4.15.2
+webdriver-manager==4.0.1
+
+# 浏览器驱动
+chromedriver-autoinstaller==0.6.2
+
+# 数据处理
+lxml==4.9.3
+beautifulsoup4==4.12.2
+parsel==1.8.1
+cssselect==1.2.0
+
+# 异步处理
+twisted
+asyncio==3.4.3
+
+# Redis客户端
+redis==5.0.1
+
+# 数据库
+pymysql==1.1.0
+
+# 对象存储
+minio==7.1.16
+
+# HTTP客户端
+requests==2.31.0
+httpx==0.25.1
+
+# 图片处理
+Pillow==10.1.0
+imagehash==4.3.1
+
+# 工具库
+psutil==5.9.6
+python-magic==0.4.27
+chardet==5.2.0
+
+# 日志
+loguru==0.7.2
+
+# 测试
+pytest==7.4.3
+pytest-asyncio==0.21.1
+
+# 开发工具
+black==23.11.0
+flake8==6.1.0

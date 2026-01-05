@@ -1,0 +1,427 @@
+# 可选删除此行，消除 "version 过时" 警告
+# version: '3.8'
+
+services:
+  # ====================== 基础服务：Redis 缓存服务器 ======================
+  redis:
+    image: redis:7-alpine
+    container_name: news_crawler_redis
+    command: redis-server /usr/local/etc/redis/redis.conf
+    volumes:
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - docker_crawler_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.2'
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-123456}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+
+  # ====================== 基础服务：MySQL 数据库服务器 ======================
+  mysql:
+    image: mysql:8.0
+    container_name: news_crawler_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-123456}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-tlzn-cns}
+      MYSQL_USER: ${MYSQL_USER:-python}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-123456}
+      MYSQL_CHARACTER_SET: utf8mb4
+      MYSQL_COLLATION: utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "3306:3306"
+    networks:
+      - docker_crawler_network
+    restart: unless-stopped
+    command: 
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --innodb_buffer_pool_size=256M
+      - --max_connections=1000
+      - --wait_timeout=86400
+      - --interactive_timeout=86400
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+        compress: "true"
+
+  # ====================== 核心服务：FastAPI 控制服务器 ======================
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    container_name: news_crawler_api
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-123456}
+      - REDIS_DB=0
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER:-python}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-123456}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-tlzn-cns}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minio}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-qec429MN}
+      - MINIO_BUCKET=${MINIO_BUCKET:-tlzn-cns-news}
+      - MINIO_SECURE=${MINIO_SECURE:-false}
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - API_DEBUG=${API_DEBUG:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
+    volumes:
+      - ../api_server:/app/api_server
+      - ../shared:/app/shared
+      - api_logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - docker_crawler_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.3'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+        compress: "true"
+
+  # ====================== 爬虫节点：节点1（修复健康检查） ======================
+  crawler-node-1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.crawler
+    container_name: news_crawler_node_1
+    environment:
+      - PYTHONPATH=/app
+      - NODE_ID=node-1
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-123456}
+      - REDIS_DB=0
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER:-python}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-123456}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-tlzn-cns}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minio}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-qec429MN}
+      - MINIO_BUCKET=${MINIO_BUCKET:-tlzn-cns-news}
+      - MINIO_SECURE=${MINIO_SECURE:-false}
+      - CONCURRENT_REQUESTS=${CONCURRENT_REQUESTS:-4}
+      - CONCURRENT_REQUESTS_PER_DOMAIN=${CONCURRENT_REQUESTS_PER_DOMAIN:-2}
+      - DOWNLOAD_DELAY=${DOWNLOAD_DELAY:-1.0}
+      - AUTOTHROTTLE_ENABLED=${AUTOTHROTTLE_ENABLED:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ../crawler_nodes:/app/crawler_nodes
+      - ../shared:/app/shared
+      - crawler_logs:/app/logs
+      - /dev/shm:/dev/shm
+    shm_size: '2gb'
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - docker_crawler_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    # 修复：简化健康检查脚本，避免语法错误，逻辑更健壮
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import redis; import os; r=redis.Redis(host='redis', port=6379, password='123456', db=0, socket_timeout=5); node_id=os.getenv('NODE_ID','node-1'); exit(0 if r.exists(f'crawler_node_{node_id}') else 1)"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+        compress: "true"
+
+  # ====================== 爬虫节点：节点2（修复默认值+健康检查） ======================
+  crawler-node-2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.crawler
+    container_name: news_crawler_node_2
+    environment:
+      - PYTHONPATH=/app
+      - NODE_ID=node-2
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-123456}
+      - REDIS_DB=0
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER:-python}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-123456}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-tlzn-cns}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minio}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-qec429MN}
+      - MINIO_BUCKET=${MINIO_BUCKET:-tlzn-cns-news}
+      - MINIO_SECURE=${MINIO_SECURE:-false}
+      - CONCURRENT_REQUESTS=${CONCURRENT_REQUESTS:-4}
+      - CONCURRENT_REQUESTS_PER_DOMAIN=${CONCURRENT_REQUESTS_PER_DOMAIN:-2}
+      - DOWNLOAD_DELAY=${DOWNLOAD_DELAY:-1.0}
+      - AUTOTHROTTLE_ENABLED=${AUTOTHROTTLE_ENABLED:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ../crawler_nodes:/app/crawler_nodes
+      - ../shared:/app/shared
+      - crawler_logs:/app/logs
+      - /dev/shm:/dev/shm
+    shm_size: '2gb'
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - docker_crawler_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    # 修复：默认值改为node-2，简化脚本
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import redis; import os; r=redis.Redis(host='redis', port=6379, password='123456', db=0, socket_timeout=5); node_id=os.getenv('NODE_ID','node-2'); exit(0 if r.exists(f'crawler_node_{node_id}') else 1)"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+        compress: "true"
+
+  # ====================== 存储服务：MinIO 对象存储 ======================
+  minio:
+    image: minio/minio:latest
+    container_name: news_crawler_minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-qec429MN}
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - docker_crawler_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.3'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+        compress: "true"
+
+  # ====================== 监控服务：Prometheus 指标采集 ======================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: news_crawler_prometheus
+    volumes:
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - docker_crawler_network
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.2'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+        compress: "true"
+
+  # ====================== 监控服务：Grafana 可视化 ======================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: news_crawler_grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3000}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../monitoring/grafana/provisioning:/etc/grafana/provisioning
+    ports:
+      - "3000:3000"
+    networks:
+      - docker_crawler_network
+    restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.2'
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+
+# ====================== 网络配置 ======================
+networks:
+  docker_crawler_network:
+    driver: bridge
+
+# ====================== 数据卷配置 ======================
+volumes:
+  redis_data:
+    driver: local
+  mysql_data:
+    driver: local
+  minio_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  nginx_logs:
+    driver: local
+  api_logs:
+    driver: local
+  crawler_logs:
+    driver: local
